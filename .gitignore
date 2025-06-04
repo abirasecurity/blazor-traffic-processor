@@ -19,3 +19,5 @@ gradle-app.setting
 
 # Intellij
 .idea
+/lib/burpsuite_pro_v2025.4.4.jar
+/lib/montoya-api-2025.4.jar

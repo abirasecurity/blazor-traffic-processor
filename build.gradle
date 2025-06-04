@@ -3,34 +3,77 @@ plugins {
     id 'application'
 }
 
-group 'com.gdssecurity'
-version '1.0'
-sourceCompatibility = 17
+group = 'com.gdssecurity'
+version = '1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(18)
+    }
+}
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
+    // MsgPack for decoding BlazorPack
     implementation 'org.msgpack:msgpack-core:0.9.3'
-    implementation 'net.portswigger.burp.extensions:montoya-api:2023.4'
+
+    // JSON handling
     implementation 'org.json:json:20220924'
+
+    // Parquet dependencies (if you're exporting data to .parquet format)
     implementation 'org.apache.parquet:parquet-common:1.12.3'
+
+    // JAXB for XML support (needed if working with some Java 8 APIs)
     implementation 'javax.xml.bind:jaxb-api:2.3.1'
+
+    // Local Burp Suite Pro JAR — must be in lib/
+    // download at
+    // https://portswigger.net/burp/releases/download?product=pro&version=2025.4.4&type=standard
+    implementation files('lib/burpsuite_pro_v2025.4.4.jar')
+
+    // Local Burp Suite Montoya JAR
+    // download at
+    // https://github.com/PortSwigger/burp-extensions-montoya-api/releases/download/2025.4/montoya-api-2025.4.jar
+    implementation files('lib/montoya-api-2025.4.jar')
+
+
+    // Unit testing
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
 }
+
+
 
 test {
     useJUnitPlatform()
 }
 
+task generateBuildProperties {
+    def outputDir = file("$buildDir/generated/resources")
+    outputs.dir outputDir
+    doLast {
+        outputDir.mkdirs()
+        def buildProps = new File(outputDir, "build.properties")
+        buildProps.text = "build.time=" + new Date().format("yyyy-MM-dd HH:mm:ss") + "\n"
+    }
+}
+
+processResources.dependsOn(generateBuildProperties)
+sourceSets.main.resources.srcDir "$buildDir/generated/resources"
+
 jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
-        attributes "Main-Class": "com.gdssecurity.BlazorTrafficProcessor"
+        attributes(
+                'Main-Class': 'com.gdssecurity.BlazorTrafficProcessor'
+        )
     }
     from {
-        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+        configurations.runtimeClasspath.collect {
+            it.isDirectory() ? it : zipTree(it)
+        }
     }
 }

@@ -21,28 +21,43 @@ import burp.api.montoya.ui.editor.extension.HttpRequestEditorProvider;
 import burp.api.montoya.ui.editor.extension.ExtensionProvidedHttpRequestEditor;
 import com.gdssecurity.editors.BTPHttpRequestEditor;
 
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 /**
- * Class to implement an HTTPRequestEditorProvider, which will create new tabs on each BlazorPack request
+ * Provides a custom HTTP request editor tab for BlazorPack requests.
+ * Implements the HttpRequestEditorProvider interface for Burp Suite Montoya API.
  */
 public class BTPHttpRequestEditorProvider implements HttpRequestEditorProvider {
 
-    private MontoyaApi _montoya;
+    private static final Logger logger = Logger.getLogger(BTPHttpRequestEditorProvider.class.getName());
+    private final MontoyaApi montoya;
 
     /**
-     * Construct a BTPHttpRequestEditorProvider
-     * @param api - an instance of the Montoya API
+     * Constructs a BTPHttpRequestEditorProvider.
+     * @param api An instance of the Montoya API.
      */
     public BTPHttpRequestEditorProvider(MontoyaApi api) {
-        this._montoya = api;
+        this.montoya = api;
+        logger.info(() -> String.format("[%1$tF %1$tT][%2$s][BTPHttpRequestEditorProvider] Initialized.",
+                System.currentTimeMillis(), Thread.currentThread().getName()));
     }
 
     /**
-     * Returns a newly created HttpRequestEditor for each in-scope BlazorPack request.
-     * @param editorContext          What mode the created editor should implement.
-     * @return the newly created editor object
+     * Returns a newly created HttpRequestEditor for each request.
+     * @param editorContext Details about the context that is requiring a request editor.
+     * @return The newly created editor object.
      */
     @Override
     public ExtensionProvidedHttpRequestEditor provideHttpRequestEditor(EditorCreationContext editorContext) {
-        return new BTPHttpRequestEditor(this._montoya, editorContext.editorMode());
+        logger.info(() -> String.format("[%1$tF %1$tT][%2$s][BTPHttpRequestEditorProvider] provideHttpRequestEditor called. EditorMode: %3$s",
+                System.currentTimeMillis(), Thread.currentThread().getName(), editorContext.editorMode()));
+        try {
+            return new BTPHttpRequestEditor(this.montoya, editorContext.editorMode());
+        } catch (Exception ex) {
+            logger.log(Level.SEVERE, String.format("[%1$tF %1$tT][%2$s][BTPHttpRequestEditorProvider] Exception creating editor: %3$s",
+                    System.currentTimeMillis(), Thread.currentThread().getName(), ex.getMessage()), ex);
+            return null;
+        }
     }
 }
