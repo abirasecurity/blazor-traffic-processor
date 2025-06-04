@@ -19,6 +19,7 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.logging.Logging;
 import burp.api.montoya.ui.Selection;
 import burp.api.montoya.ui.editor.RawEditor;
@@ -129,15 +130,10 @@ public class BTPHttpResponseEditor implements ExtensionProvidedHttpResponseEdito
             url = (requestResponse != null) ? requestResponse.url() : null;
             logger.info("[BTPHttpResponseEditor] isEnabledFor() called. URL: " + url +
                     ", Thread: " + Thread.currentThread().getName() + ", Time: " + System.currentTimeMillis());
-        } catch (burp.api.montoya.http.message.requests.MalformedRequestException e) {
-            String msg = "[BTPHttpResponseEditor] isEnabledFor: MalformedRequestException: " + e.getMessage();
-            logger.log(Level.WARNING, msg, e);
-            this.logging.logToError(msg);
-            return false;
         } catch (Exception e) {
             String msg = "[BTPHttpResponseEditor] isEnabledFor: Unexpected exception: " + e.getMessage();
             logger.log(Level.SEVERE, msg, e);
-            this.logging.logToError(msg);
+            if (this.logging != null) this.logging.logToError(msg);
             return false;
         }
 
@@ -145,35 +141,38 @@ public class BTPHttpResponseEditor implements ExtensionProvidedHttpResponseEdito
             logger.info("[BTPHttpResponseEditor] isEnabledFor: requestResponse or response is null.");
             return false;
         }
-        if (requestResponse.response().httpVersion() == null) {
-            logger.info("[BTPHttpResponseEditor] isEnabledFor: httpVersion is null.");
-            return false;
-        }
-        if (this._montoya.scope() == null) {
-            logger.info("[BTPHttpResponseEditor] isEnabledFor: scope is null.");
-            return false;
-        }
-        if (url == null || !url.contains(BTPConstants.BLAZOR_URL)) {
-            logger.info("[BTPHttpResponseEditor] isEnabledFor: url is null or does not contain BLAZOR_URL (" + BTPConstants.BLAZOR_URL + ").");
-            return false;
-        }
-        if (!this._montoya.scope().isInScope(url)) {
-            logger.info("[BTPHttpResponseEditor] isEnabledFor: url not in scope.");
-            return false;
-        }
         if (requestResponse.response().body() == null || requestResponse.response().body().length() == 0) {
             logger.info("[BTPHttpResponseEditor] isEnabledFor: response body is null or empty.");
             return false;
         }
-        // Response during negotiation containing "{}\x1e", not valid blazor and BTP tab shouldn't be enabled
+
+
+        // Accurate Content-Type extraction
+        String contentType = null;
+        for (HttpHeader header : requestResponse.response().headers()) {
+            if ("Content-Type".equalsIgnoreCase(header.name())) {
+                contentType = header.value();
+                break;
+            }
+        }
+        if (contentType == null || !contentType.toLowerCase().contains("application/octet-stream")) {
+            logger.info("[BTPHttpResponseEditor] isEnabledFor: Content-Type is not application/octet-stream.");
+            return false;
+        }
+        if (contentType == null || !contentType.toLowerCase().contains("application/octet-stream")) {
+            logger.info("[BTPHttpResponseEditor] isEnabledFor: Content-Type is not application/octet-stream.");
+            return false;
+        }
+
+        // Optionally keep your negotiation message filter
         if (requestResponse.response().body().length() == 3 && requestResponse.response().body().toString().startsWith("{}")) {
             logger.info("[BTPHttpResponseEditor] isEnabledFor: response body is negotiation message.");
             return false;
         }
+
         logger.info("[BTPHttpResponseEditor] isEnabledFor: returning true.");
         return true;
     }
-
 
     /**
      * Gets the caption for the response editor tab
