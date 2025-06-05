@@ -50,6 +50,7 @@ public class BTPHttpRequestHandler implements ProxyRequestHandler {
     public ProxyRequestReceivedAction handleRequestReceived(InterceptedRequest interceptedRequest) {
         if (interceptedRequest.body().length() != 0 && interceptedRequest.path().contains("_blazor?id")) {
             interceptedRequest.annotations().setHighlightColor(HighlightColor.CYAN);
+            _logging.logToOutput("[BTPHttpRequestHandler] Highlighted BlazorPack request: " + interceptedRequest.path());
         }
         return ProxyRequestReceivedAction.continueWith(interceptedRequest);
     }

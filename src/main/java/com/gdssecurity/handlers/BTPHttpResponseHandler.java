@@ -24,18 +24,24 @@ import burp.api.montoya.proxy.http.ProxyResponseHandler;
 import burp.api.montoya.proxy.http.ProxyResponseReceivedAction;
 import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
 import com.gdssecurity.helpers.BTPConstants;
+import com.gdssecurity.helpers.ActiveCircuitTracker;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 /**
  * Class to handle the downgrade from WS to LongPolling (HTTP)
+ * and track the latest connectionToken from negotiate responses.
  */
 public class BTPHttpResponseHandler implements ProxyResponseHandler {
 
-    private MontoyaApi _montoya;
-    private Logging _logging;
-    private JSONArray modifiedTransports;
+    private final MontoyaApi _montoya;
+    private final Logging _logging;
+    private final JSONArray modifiedTransports;
+    private static final Logger logger = Logger.getLogger("BTP");
 
     /**
      * Constructor for the BTPHttpResponseHandler object
@@ -48,7 +54,8 @@ public class BTPHttpResponseHandler implements ProxyResponseHandler {
     }
 
     /**
-     * Handles the downgrade by listening for matching HTTP responses and auto-modifying them to omit WS
+     * Handles the downgrade by listening for matching HTTP responses and auto-modifying them to omit WS.
+     * Also tracks the latest connectionToken from negotiate responses.
      * @param interceptedResponse - An object containing the intercepted HTTP response
      * @return the downgraded body if applicable, otherwise just let the response go through un-touched
      */
@@ -60,11 +67,31 @@ public class BTPHttpResponseHandler implements ProxyResponseHandler {
         }
 
         // Handle Blazor Negotiation
-        if (!interceptedResponse.initiatingRequest().url().contains(BTPConstants.NEGOTIATE_URL) || interceptedResponse.statedMimeType() != MimeType.JSON) {
+        String url = "";
+        try {
+            url = interceptedResponse.initiatingRequest().url();
+        } catch (Exception e) {
+            _logging.logToError("[BTPHttpResponseHandler] Could not get URL from initiating request: " + e.getMessage());
+        }
+
+        if (url == null || !url.contains(BTPConstants.NEGOTIATE_URL) || interceptedResponse.statedMimeType() != MimeType.JSON) {
             return ProxyResponseReceivedAction.continueWith(interceptedResponse);
         }
+
         try {
-            JSONObject body = new JSONObject(interceptedResponse.bodyToString());
+            String bodyStr = interceptedResponse.bodyToString();
+            JSONObject body = new JSONObject(bodyStr);
+
+            // --- NEW: Track latest connectionToken ---
+            if (body.has("connectionToken")) {
+                String token = body.optString("connectionToken", null);
+                if (token != null) {
+                    ActiveCircuitTracker.setLatestToken(token);
+                    logger.info("[BTPHttpResponseHandler] Updated latest connectionToken: " + token);
+                }
+            }
+
+            // --- Existing: Downgrade availableTransports if needed ---
             if (body.has("availableTransports")) {
                 boolean wsEnabled = false;
                 JSONArray transports = new JSONArray(body.getJSONArray("availableTransports"));
@@ -80,14 +107,17 @@ public class BTPHttpResponseHandler implements ProxyResponseHandler {
                 } else {
                     body.remove("availableTransports");
                     body.put("availableTransports", this.modifiedTransports);
+                    logger.info("[BTPHttpResponseHandler] Downgraded availableTransports for: " + url);
                     return ProxyResponseReceivedAction.continueWith(interceptedResponse.withBody(body.toString()));
                 }
             }
         } catch (JSONException jsonE) {
             this._logging.logToError("[-] handleResponseReceived - An error occurred while reading JSON body for downgrade: " + jsonE.getMessage());
+            logger.log(Level.WARNING, "[BTPHttpResponseHandler] JSON error: " + jsonE.getMessage(), jsonE);
             return ProxyResponseReceivedAction.continueWith(interceptedResponse);
         } catch (Exception e) {
             this._logging.logToError("[-] handleResponseReceived - An unexpected exception occurred when performing the downgrade: " + e.getMessage());
+            logger.log(Level.SEVERE, "[BTPHttpResponseHandler] Unexpected error: " + e.getMessage(), e);
             return ProxyResponseReceivedAction.continueWith(interceptedResponse);
         }
         return ProxyResponseReceivedAction.continueWith(interceptedResponse);
