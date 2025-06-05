@@ -17,6 +17,7 @@ package com.gdssecurity.handlers;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.HighlightColor;
+import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.MimeType;
 import burp.api.montoya.logging.Logging;
 import burp.api.montoya.proxy.http.InterceptedResponse;
@@ -31,6 +32,8 @@ import org.json.JSONObject;
 
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.List;
+
 
 /**
  * Class to handle the downgrade from WS to LongPolling (HTTP)
@@ -82,12 +85,32 @@ public class BTPHttpResponseHandler implements ProxyResponseHandler {
             String bodyStr = interceptedResponse.bodyToString();
             JSONObject body = new JSONObject(bodyStr);
 
-            // --- NEW: Track latest connectionToken ---
+            // --- NEW: Track latest connectionToken and Cookie ---
             if (body.has("connectionToken")) {
                 String token = body.optString("connectionToken", null);
                 if (token != null) {
                     ActiveCircuitTracker.setLatestToken(token);
                     logger.info("[BTPHttpResponseHandler] Updated latest connectionToken: " + token);
+
+                    // Extract Cookie header from initiating request
+                    String latestCookie = null;
+                    try {
+                        List<HttpHeader> headers = interceptedResponse.initiatingRequest().headers();
+                        for (HttpHeader header : headers) {
+                            if ("cookie".equalsIgnoreCase(header.name())) {
+                                latestCookie = header.value();
+                                break;
+                            }
+                        }
+                        if (latestCookie != null) {
+                            ActiveCircuitTracker.setLatestCookie(latestCookie);
+                            logger.info("[BTPHttpResponseHandler] Updated latestCookie: " + latestCookie);
+                        } else {
+                            logger.info("[BTPHttpResponseHandler] No Cookie header found in initiating request.");
+                        }
+                    } catch (Exception ex) {
+                        logger.log(Level.WARNING, "[BTPHttpResponseHandler] Error extracting Cookie header: " + ex.getMessage(), ex);
+                    }
                 }
             }
 
@@ -122,6 +145,7 @@ public class BTPHttpResponseHandler implements ProxyResponseHandler {
         }
         return ProxyResponseReceivedAction.continueWith(interceptedResponse);
     }
+
 
     /**
      * Handles the logic for after a response has been processed

@@ -91,18 +91,94 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
             public void actionPerformed(ActionEvent e) {
                 try {
                     updateRequestUrlWithActiveCircuit();
+
+                    // --- Send the updated request to Repeater as a new tab ---
+                    try {
+                        // 1. Get the latest editor contents
+                        String editorContents = new String(editor.getContents().getBytes(), java.nio.charset.StandardCharsets.ISO_8859_1);
+                        byte[] editorBytes = editorContents.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+
+                        // 2. Parse the request (headers + request line)
+                        burp.api.montoya.http.message.requests.HttpRequest updatedRequest =
+                                burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                                        burp.api.montoya.core.ByteArray.byteArray(editorBytes)
+                                );
+
+                        // 3. Find the body offset
+                        int bodyOffset = blazorHelper.getBodyOffset(editorBytes);
+                        if (bodyOffset < 0 || bodyOffset >= editorBytes.length) {
+                            logger.warning("[BTPHttpRequestEditor] Could not determine body offset; sending as-is.");
+                            montoya.repeater().sendToRepeater(updatedRequest);
+                            JOptionPane.showMessageDialog(mainPanel, "Updated request sent to Repeater (body unchanged). Please use the new tab.");
+                            return;
+                        }
+
+                        // 4. Extract and reserialize the body as BlazorPack
+                        byte[] jsonBody = com.gdssecurity.helpers.ArraySliceHelper.getArraySlice(editorBytes, bodyOffset, editorBytes.length);
+                        byte[] newBody;
+                        try {
+                            org.json.JSONArray messages = new org.json.JSONArray(new String(jsonBody, java.nio.charset.StandardCharsets.UTF_8));
+                            newBody = blazorHelper.blazorPack(messages);
+                        } catch (Exception ex) {
+                            logger.log(java.util.logging.Level.WARNING, "[BTPHttpRequestEditor] Body not valid JSON, sending as-is: " + ex.getMessage(), ex);
+                            montoya.repeater().sendToRepeater(updatedRequest);
+                            JOptionPane.showMessageDialog(mainPanel, "Updated request sent to Repeater (body unchanged). Please use the new tab.");
+                            return;
+                        }
+
+                        // 5. Build the final request with the reserialized body
+                        burp.api.montoya.http.message.requests.HttpRequest finalRequest = updatedRequest.withBody(
+                                burp.api.montoya.core.ByteArray.byteArray(newBody)
+                        );
+
+                        // 6. Send to Repeater
+                        montoya.repeater().sendToRepeater(finalRequest);
+                        logger.info("[BTPHttpRequestEditor] Sent updated request (with reserialized body) to Repeater for persistence.");
+                        JOptionPane.showMessageDialog(mainPanel, "Updated request (with reserialized body) sent to Repeater. Please use the new tab.");
+
+                    } catch (Exception ex) {
+                        logger.log(java.util.logging.Level.SEVERE, "[BTPHttpRequestEditor] Failed to send updated request to Repeater: " + ex.getMessage(), ex);
+                        JOptionPane.showMessageDialog(mainPanel, "Failed to send updated request to Repeater: " + ex.getMessage());
+                    }
+
                 } catch (Exception ex) {
-                    logger.log(Level.SEVERE, "[BTPHttpRequestEditor] Error updating to active circuit", ex);
+                    logger.log(java.util.logging.Level.SEVERE, "[BTPHttpRequestEditor] Error updating to active circuit", ex);
                     JOptionPane.showMessageDialog(mainPanel, "Failed to update circuit: " + ex.getMessage());
                 }
             }
         });
+
     // Add periodic status check
     Timer circuitStatusTimer = new Timer(1000, evt -> updateCircuitStatusLabel());
     circuitStatusTimer.setRepeats(true);
     circuitStatusTimer.start();
     }
 
+    /**
+     * Converts a header name to HTTP "Camel-Case" (first letter and every letter after a dash capitalized).
+     * Example: "content-length" -> "Content-Length"
+     * @param headerName The original header name.
+     * @return The header name in HTTP Camel-Case.
+     */
+    private static String toHttpCamelCase(String headerName) {
+        if (headerName == null || headerName.isEmpty()) {
+            return headerName;
+        }
+        StringBuilder sb = new StringBuilder(headerName.length());
+        boolean capitalize = true;
+        for (char c : headerName.toCharArray()) {
+            if (capitalize && Character.isLetter(c)) {
+                sb.append(Character.toUpperCase(c));
+                capitalize = false;
+            } else {
+                sb.append(Character.toLowerCase(c));
+            }
+            if (c == '-') {
+                capitalize = true;
+            }
+        }
+        return sb.toString();
+    }
     /**
      * Converts a JSON message to BlazorPack, called when the "Raw" tab is clicked
      * Just return the existing request body if editor not modified, re-serialize if editor is modified
@@ -111,54 +187,60 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
      */
     @Override
     public HttpRequest getRequest() {
-        logger.info(() -> String.format("[%1$tF %1$tT][%2$s][BTPHttpRequestEditor] getRequest() called. isModified: %3$s",
-                System.currentTimeMillis(), Thread.currentThread().getName(), this.editor.isModified()));
-
-        // Prompt if not using active circuit
-        String latestToken = ActiveCircuitTracker.getLatestToken();
-        String idInUrl = extractIdFromUrl();
-        if (latestToken != null && idInUrl != null && !latestToken.equals(idInUrl)) {
-            int result = JOptionPane.showConfirmDialog(mainPanel,
-                    "This request is not using the active circuit.\nReplace id with the active one?",
-                    "Update to Active Circuit", JOptionPane.YES_NO_OPTION);
-            if (result == JOptionPane.YES_OPTION) {
-                updateRequestUrlWithActiveCircuit();
-            }
-        }
-
-        byte[] body;
-        if (this.editor.isModified()) {
-            int bodyOffset = this.blazorHelper.getBodyOffset(this.editor.getContents().getBytes());
-            body = ArraySliceHelper.getArraySlice(this.editor.getContents().getBytes(), bodyOffset, this.editor.getContents().length());
-        } else {
-            body = this.reqResp.request().body().getBytes();
-        }
-        if (body == null || body.length == 0) {
-            String msg = "[-] getRequest: The selected editor body is empty/null.";
-            this.logging.logToError(msg);
-            logger.warning("[BTPHttpRequestEditor] " + msg);
-            return null;
-        }
-        JSONArray messages;
-        byte[] newBody;
+        logger.info(() -> String.format("[%1$tF %1$tT][%2$s][BTPHttpRequestEditor] getRequest() called.",
+                System.currentTimeMillis(), Thread.currentThread().getName()));
         try {
-            messages = new JSONArray(new String(body));
-            newBody = this.blazorHelper.blazorPack(messages);
-        } catch (JSONException e) {
-            String msg = "[-] getRequest - JSONException while parsing JSON array: " + e.getMessage();
-            this.logging.logToError(msg);
-            logger.log(Level.WARNING, "[BTPHttpRequestEditor] " + msg, e);
-            return null;
-        } catch (Exception e) {
-            String msg = "[-] getRequest - Unexpected exception while getting the request: " + e.getMessage();
-            this.logging.logToError(msg);
-            logger.log(Level.SEVERE, "[BTPHttpRequestEditor] " + msg, e);
+            // Always use the latest editor contents
+            String editorContents = new String(this.editor.getContents().getBytes(), StandardCharsets.ISO_8859_1);
+            byte[] editorBytes = editorContents.getBytes(StandardCharsets.ISO_8859_1);
+
+            // Parse the request line and headers from the editor
+            HttpRequest updatedRequest = HttpRequest.httpRequest(ByteArray.byteArray(editorBytes));
+
+            // Find the body offset
+            int bodyOffset = this.blazorHelper.getBodyOffset(editorBytes);
+            if (bodyOffset < 0 || bodyOffset >= editorBytes.length) {
+                logger.warning("[BTPHttpRequestEditor] Could not determine body offset; returning as-is.");
+                logger.info("[BTPHttpRequestEditor] Full request being sent (raw):\n" + editorContents);
+                return updatedRequest;
+            }
+
+            // Extract the JSON body
+            byte[] jsonBody = ArraySliceHelper.getArraySlice(editorBytes, bodyOffset, editorBytes.length);
+
+            // Try to reserialize the body as BlazorPack
+            try {
+                JSONArray messages = new JSONArray(new String(jsonBody, StandardCharsets.UTF_8));
+                byte[] newBody = this.blazorHelper.blazorPack(messages);
+                HttpRequest finalRequest = updatedRequest.withBody(ByteArray.byteArray(newBody));
+                logFullRequest(finalRequest, newBody.length);
+                return finalRequest;
+            } catch (Exception e) {
+                // If body is not valid JSON, just return the request as parsed from the editor (headers and body as-is)
+                logger.log(Level.WARNING, "[BTPHttpRequestEditor] Body not valid JSON, sending as-is: " + e.getMessage(), e);
+                logFullRequest(updatedRequest, jsonBody.length);
+                return updatedRequest;
+            }
+        } catch (Exception ex) {
+            logger.log(Level.SEVERE, "[BTPHttpRequestEditor] getRequest() failed: " + ex.getMessage(), ex);
+            JOptionPane.showMessageDialog(mainPanel, "Failed to build request from editor: " + ex.getMessage());
             return null;
         }
-        logger.info(() -> String.format("[%1$tF %1$tT][%2$s][BTPHttpRequestEditor] getRequest() returning new HttpRequest with body length: %3$d",
-                System.currentTimeMillis(), Thread.currentThread().getName(), (newBody != null ? newBody.length : 0)));
-        return this.reqResp.request().withBody(ByteArray.byteArray(newBody));
     }
+
+    private void logFullRequest(HttpRequest request, int bodyLength) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(request.method()).append(" ").append(request.path()).append(" ").append(request.httpVersion()).append("\r\n");
+        for (HttpHeader header : request.headers()) {
+            sb.append(header.name()).append(": ").append(header.value()).append("\r\n");
+        }
+        sb.append("\r\n");
+        sb.append("[BODY: ").append(bodyLength).append(" bytes]");
+        logger.info("[BTPHttpRequestEditor] Full request being sent (headers + body):\n" + sb.toString());
+    }
+
+
+
 
     /**
      * Converts a given BlazorPack message to JSON, called when the "BTP" tab is clicked.
@@ -213,24 +295,28 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
         SwingUtilities.invokeLater(this::updateCircuitStatusLabel);
     }
     /**
-     * Update the request URL's id parameter to the active circuit token.
+     * Update the request URL's id parameter to the active circuit token,
+     * and replace the Cookie header value with the latestCookie from ActiveCircuitTracker.
      * Ensures Host and Cookie headers are present and capitalized, and all other headers retain their original case and order.
      * The editor UI will display headers exactly as constructed.
      */
     private void updateRequestUrlWithActiveCircuit() {
         String latestToken = ActiveCircuitTracker.getLatestToken();
+        String latestCookie = ActiveCircuitTracker.getLatestCookie();
+
         if (latestToken == null) {
             JOptionPane.showMessageDialog(mainPanel, "No active circuit token available.");
             return;
         }
+        if (latestCookie == null) {
+            JOptionPane.showMessageDialog(mainPanel, "No active circuit cookie available.");
+            return;
+        }
+
         try {
             if (this.reqResp != null && this.reqResp.request() != null) {
                 HttpRequest original = this.reqResp.request();
                 String url = original.url();
-                String oldToken = extractIdFromUrl();
-
-                List<HttpHeader> headers = original.headers();
-                logHeaders("Original", headers);
 
                 // Update id in URL
                 String updatedUrl = url.replaceAll("id=[^&]+", "id=" + latestToken);
@@ -241,12 +327,12 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
 
                 // Prepare header variables
                 String hostHeaderValue = null;
-                StringBuilder cookieHeaderValue = new StringBuilder();
                 List<HttpHeader> otherHeaders = new ArrayList<>();
-
-                // Track if Host/Cookie were found in original headers
                 boolean hostFound = false;
                 boolean cookieFound = false;
+
+                List<HttpHeader> headers = original.headers();
+                logHeaders("Original", headers);
 
                 for (HttpHeader header : headers) {
                     String name = header.name();
@@ -254,12 +340,8 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                     if (name.trim().equalsIgnoreCase("Host")) {
                         hostHeaderValue = header.value();
                         hostFound = true;
-                        logger.info("[BTPHttpRequestEditor][HeaderLoop] Matched Host header: '" + name + "' value: '" + hostHeaderValue + "'");
                     } else if (name.trim().equalsIgnoreCase("Cookie")) {
-                        if (cookieHeaderValue.length() > 0) {
-                            cookieHeaderValue.append("; ");
-                        }
-                        cookieHeaderValue.append(header.value());
+                        // Skip old cookie header, will add new one below
                         cookieFound = true;
                     } else if (!name.startsWith(":")) {
                         otherHeaders.add(header);
@@ -286,12 +368,6 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                     }
                 }
 
-                // Update the cookie value if it contains the old token
-                if (cookieHeaderValue.length() > 0 && oldToken != null) {
-                    String updatedCookieValue = cookieHeaderValue.toString().replace(oldToken, latestToken);
-                    cookieHeaderValue = new StringBuilder(updatedCookieValue);
-                }
-
                 // Build the raw HTTP request string
                 StringBuilder rawRequest = new StringBuilder();
                 // Request line
@@ -310,17 +386,14 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                     logger.warning("[BTPHttpRequestEditor][RawRequest] Host header is STILL missing after recovery attempt!");
                 }
 
-                // Cookie header (always third line, capitalized)
-                if (cookieHeaderValue.length() > 0) {
-                    rawRequest.append("Cookie: ").append(cookieHeaderValue).append("\r\n");
-                    logger.info("[BTPHttpRequestEditor][RawRequest] Added Cookie: " + cookieHeaderValue);
-                } else {
-                    logger.info("[BTPHttpRequestEditor][RawRequest] No Cookie header to add.");
-                }
+                // Cookie header (always third line, capitalized, always set to latestCookie)
+                rawRequest.append("Cookie: ").append(latestCookie).append("\r\n");
+                logger.info("[BTPHttpRequestEditor][RawRequest] Set Cookie header to latestCookie: " + latestCookie);
 
                 // All other headers (skip Host and Cookie, preserve original case and order)
                 for (HttpHeader header : otherHeaders) {
-                    rawRequest.append(header.name()).append(": ").append(header.value()).append("\r\n");
+                    String camelCaseName = toHttpCamelCase(header.name());
+                    rawRequest.append(camelCaseName).append(": ").append(header.value()).append("\r\n");
                 }
                 rawRequest.append("\r\n");
 
@@ -335,11 +408,15 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                 // Set the editor contents directly with the raw request string (preserves header case/order in UI)
                 this.editor.setContents(ByteArray.byteArray(rawRequest.toString().getBytes(StandardCharsets.ISO_8859_1)));
                 logger.info("[BTPHttpRequestEditor] Updated editor contents with correct header case and order.");
-
-                // Optionally update reqResp for further processing (not for UI)
-                this.reqResp = HttpRequestResponse.httpRequestResponse(
-                        HttpRequest.httpRequest(rawRequest.toString()), this.reqResp.response()
-                );
+// --- Ensure reqResp is updated so the status label reflects the new circuit ---
+                try {
+                    String updatedEditorContents = new String(this.editor.getContents().getBytes(), StandardCharsets.ISO_8859_1);
+                    HttpRequest updatedRequest = HttpRequest.httpRequest(ByteArray.byteArray(updatedEditorContents.getBytes(StandardCharsets.ISO_8859_1)));
+                    this.reqResp = HttpRequestResponse.httpRequestResponse(updatedRequest, this.reqResp != null ? this.reqResp.response() : null);
+                    logger.info("[BTPHttpRequestEditor] reqResp updated after circuit update for status label sync.");
+                } catch (Exception ex) {
+                    logger.log(Level.WARNING, "[BTPHttpRequestEditor] Failed to update reqResp after circuit update: " + ex.getMessage(), ex);
+                }
 
                 updateCircuitStatusLabel();
             }
@@ -348,6 +425,8 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
             JOptionPane.showMessageDialog(mainPanel, "Failed to update request URL/cookie: " + ex.getMessage());
         }
     }
+
+
 
     /**
      * Helper to safely get URL for logging without throwing.
