@@ -32,7 +32,6 @@ import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
 import javax.swing.Timer;
 
-
 /**
  * Class to implement the "BTP" editor tab for HTTP requests
  */
@@ -92,7 +91,6 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                 try {
                     updateRequestUrlWithActiveCircuit();
 
-                    // --- Send the updated request to Repeater as a new tab ---
                     try {
                         // 1. Get the latest editor contents
                         String editorContents = new String(editor.getContents().getBytes(), java.nio.charset.StandardCharsets.ISO_8859_1);
@@ -108,7 +106,7 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                         int bodyOffset = blazorHelper.getBodyOffset(editorBytes);
                         if (bodyOffset < 0 || bodyOffset >= editorBytes.length) {
                             logger.warning("[BTPHttpRequestEditor] Could not determine body offset; sending as-is.");
-                            montoya.repeater().sendToRepeater(updatedRequest);
+                            sendToRepeaterWithTarget(updatedRequest, null);
                             JOptionPane.showMessageDialog(mainPanel, "Updated request sent to Repeater (body unchanged). Please use the new tab.");
                             return;
                         }
@@ -121,7 +119,7 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                             newBody = blazorHelper.blazorPack(messages);
                         } catch (Exception ex) {
                             logger.log(java.util.logging.Level.WARNING, "[BTPHttpRequestEditor] Body not valid JSON, sending as-is: " + ex.getMessage(), ex);
-                            montoya.repeater().sendToRepeater(updatedRequest);
+                            sendToRepeaterWithTarget(updatedRequest, null);
                             JOptionPane.showMessageDialog(mainPanel, "Updated request sent to Repeater (body unchanged). Please use the new tab.");
                             return;
                         }
@@ -131,10 +129,8 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
                                 burp.api.montoya.core.ByteArray.byteArray(newBody)
                         );
 
-                        // 6. Send to Repeater
-                        montoya.repeater().sendToRepeater(finalRequest);
-                        logger.info("[BTPHttpRequestEditor] Sent updated request (with reserialized body) to Repeater for persistence.");
-                        JOptionPane.showMessageDialog(mainPanel, "Updated request (with reserialized body) sent to Repeater. Please use the new tab.");
+                        // 6. Send to Repeater with explicit target
+                        sendToRepeaterWithTarget(finalRequest, finalRequest);
 
                     } catch (Exception ex) {
                         logger.log(java.util.logging.Level.SEVERE, "[BTPHttpRequestEditor] Failed to send updated request to Repeater: " + ex.getMessage(), ex);
@@ -148,11 +144,73 @@ public class BTPHttpRequestEditor implements ExtensionProvidedHttpRequestEditor 
             }
         });
 
-    // Add periodic status check
-    Timer circuitStatusTimer = new Timer(1000, evt -> updateCircuitStatusLabel());
-    circuitStatusTimer.setRepeats(true);
-    circuitStatusTimer.start();
+        // Add periodic status check
+        Timer circuitStatusTimer = new Timer(1000, evt -> updateCircuitStatusLabel());
+        circuitStatusTimer.setRepeats(true);
+        circuitStatusTimer.start();
     }
+
+    /**
+     * Sends the provided request to Repeater, using the Host header as the target if available.
+     * If requestForTarget is null, uses the original request for target extraction.
+     */
+    /**
+     * Sends the provided request to Repeater, using the Host header as the target if available.
+     * If requestForTarget is null, uses the original request for target extraction.
+     */
+    /**
+     * Sends the provided request to Repeater, using the Host header as the target if available.
+     * If requestForTarget is null, uses the original request for target extraction.
+     */
+    private void sendToRepeaterWithTarget(
+            burp.api.montoya.http.message.requests.HttpRequest request,
+            burp.api.montoya.http.message.requests.HttpRequest requestForTarget
+    ) {
+        try {
+            burp.api.montoya.http.message.requests.HttpRequest req = requestForTarget != null ? requestForTarget : request;
+            String host = null;
+            String protocol = "https";
+            int port = 443;
+
+            for (burp.api.montoya.http.message.HttpHeader header : req.headers()) {
+                if ("Host".equalsIgnoreCase(header.name())) {
+                    host = header.value();
+                    break;
+                }
+            }
+
+            if (host != null && host.contains(":")) {
+                String[] parts = host.split(":", 2);
+                host = parts[0];
+                try {
+                    port = Integer.parseInt(parts[1]);
+                } catch (NumberFormatException e) {
+                    port = protocol.equals("https") ? 443 : 80;
+                }
+            } else if (host != null) {
+                port = protocol.equals("https") ? 443 : 80;
+            }
+
+            if (host != null) {
+                // Create a descriptive tab name for the Repeater
+                String tabName = "BTP - " + protocol + "://" + host + ":" + port;
+
+                // Use the correct sendToRepeater method signature with String tab name
+                montoya.repeater().sendToRepeater(request, tabName);
+                logger.info("[BTPHttpRequestEditor] Sent updated request to Repeater with tab name: " + tabName);
+                JOptionPane.showMessageDialog(mainPanel, "Updated request sent to Repeater (tab: " + tabName + "). Please use the new tab.");
+            } else {
+                // Use the simpler sendToRepeater method when no target available
+                montoya.repeater().sendToRepeater(request, "BTP Request");
+                JOptionPane.showMessageDialog(mainPanel, "Host header not found, sent to Repeater with default tab name.");
+            }
+        } catch (Exception ex) {
+            logger.log(java.util.logging.Level.SEVERE, "[BTPHttpRequestEditor] Failed to send to Repeater with target: " + ex.getMessage(), ex);
+            JOptionPane.showMessageDialog(mainPanel, "Failed to send to Repeater: " + ex.getMessage());
+        }
+    }
+
+
 
     /**
      * Converts a header name to HTTP "Camel-Case" (first letter and every letter after a dash capitalized).
